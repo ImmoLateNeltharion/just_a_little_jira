@@ -1,0 +1,11 @@
+services:
+  app:
+    build: .
+    ports:
+      - "5050:5050"
+    volumes:
+      - jira-data:/data
+    restart: unless-stopped
+
+volumes:
+  jira-data:
