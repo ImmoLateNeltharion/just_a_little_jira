@@ -78,6 +78,17 @@ header h1 { font-size: 18px; font-weight: 600; }
 .answer-form textarea { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; font-family: inherit; min-height: 60px; resize: vertical; }
 .answer-form-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }
 
+/* Files */
+.file-item { display: flex; align-items: center; gap: 10px; background: #fff; border: 1px solid #eee; border-radius: 8px; padding: 10px 14px; margin-bottom: 8px; }
+.file-icon { font-size: 20px; width: 28px; text-align: center; }
+.file-info { flex: 1; min-width: 0; }
+.file-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-size { font-size: 11px; color: #999; }
+.file-actions { display: flex; gap: 4px; }
+.upload-area { border: 2px dashed #ccc; border-radius: 8px; padding: 20px; text-align: center; color: #999; font-size: 13px; cursor: pointer; margin-top: 16px; transition: border-color .15s, background .15s; }
+.upload-area:hover, .upload-area.dragover { border-color: #4361ee; background: #f0f2ff; color: #4361ee; }
+.upload-area input { display: none; }
+
 @media (max-width: 768px) {
   .main { flex-direction: column; }
   .sidebar { width: 100%; min-width: 0; max-height: 40vh; }
@@ -194,6 +205,7 @@ async function renderDetail() {
       <div class="tab ${currentTab==='desc'?'active':''}" onclick="switchTab('desc')">Description</div>
       <div class="tab ${currentTab==='comments'?'active':''}" onclick="switchTab('comments')">Comments</div>
       <div class="tab ${currentTab==='questions'?'active':''}" onclick="switchTab('questions')">Questions</div>
+      <div class="tab ${currentTab==='files'?'active':''}" onclick="switchTab('files')">Files</div>
     </div>
     <div class="tab-content" id="tabContent"></div>
   `;
@@ -202,7 +214,8 @@ async function renderDetail() {
 
 async function switchTab(tab) {
   currentTab = tab;
-  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.textContent.toLowerCase().startsWith(tab.slice(0,4))));
+  const labels = { desc: 'Description', comments: 'Comments', questions: 'Questions', files: 'Files' };
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.textContent === labels[tab]));
   await renderTabContent();
 }
 
@@ -230,6 +243,29 @@ async function renderTabContent() {
       <div class="input-row">
         <textarea id="newComment" placeholder="Add a comment..."></textarea>
         <button class="btn btn-primary btn-sm" onclick="addComment(${task.id})" style="align-self:flex-end">Send</button>
+      </div>
+    `;
+  } else if (currentTab === 'files') {
+    const files = await api(`/tasks/${task.id}/files`);
+    el.innerHTML = files.map(f => `
+      <div class="file-item">
+        <div class="file-icon">${fileIcon(f.filename)}</div>
+        <div class="file-info">
+          <div class="file-name">${esc(f.filename)}</div>
+          <div class="file-size">${formatSize(f.size)} &middot; ${formatDate(f.created_at)}</div>
+        </div>
+        <div class="file-actions">
+          <a class="btn btn-primary btn-sm" href="/api/files/${f.id}/download" style="text-decoration:none">Download</a>
+          <button class="btn btn-danger btn-sm" onclick="deleteFile(${f.id}, ${task.id})">Delete</button>
+        </div>
+      </div>
+    `).join('') + `
+      <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()"
+           ondragover="event.preventDefault();this.classList.add('dragover')"
+           ondragleave="this.classList.remove('dragover')"
+           ondrop="event.preventDefault();this.classList.remove('dragover');uploadFiles(${task.id}, event.dataTransfer.files)">
+        Drop files here or click to upload (max 50MB)
+        <input type="file" id="fileInput" multiple onchange="uploadFiles(${task.id}, this.files)">
       </div>
     `;
   } else if (currentTab === 'questions') {
@@ -307,6 +343,38 @@ async function submitAnswer(qId) {
   await api(`/questions/${qId}/answer`, { method: 'PUT', body: { answer } });
   await loadTasks();
   await renderTabContent();
+}
+
+// --- Files ---
+async function uploadFiles(taskId, fileList) {
+  for (const file of fileList) {
+    const fd = new FormData();
+    fd.append('file', file);
+    await fetch(`${API}/tasks/${taskId}/files`, { method: 'POST', body: fd });
+  }
+  await loadTasks();
+  await renderTabContent();
+}
+
+async function deleteFile(fileId, taskId) {
+  if (!confirm('Delete this file?')) return;
+  await fetch(`${API}/files/${fileId}`, { method: 'DELETE' });
+  await loadTasks();
+  await renderTabContent();
+}
+
+function fileIcon(name) {
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  const icons = { pdf: '📄', png: '🖼', jpg: '🖼', jpeg: '🖼', gif: '🖼', svg: '🖼', mp4: '🎬', mov: '🎬', zip: '📦', rar: '📦', doc: '📝', docx: '📝', xls: '📊', xlsx: '📊' };
+  return icons[ext] || '📎';
+}
+
+function formatSize(bytes) {
+  if (!bytes) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return (bytes / Math.pow(k, i)).toFixed(i ? 1 : 0) + ' ' + sizes[i];
 }
 
 // --- Create modal ---

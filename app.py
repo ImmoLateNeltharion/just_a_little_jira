@@ -1,10 +1,13 @@
 import sqlite3
 import os
 from datetime import datetime
-from flask import Flask, render_template, request, jsonify, g
+from flask import Flask, render_template, request, jsonify, g, send_from_directory
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 DB_PATH = os.environ.get("DB_PATH", "data/jira.db")
+UPLOAD_DIR = os.environ.get("UPLOAD_DIR", "data/uploads")
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 
 
 def get_db():
@@ -39,6 +42,14 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
             text TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            filename TEXT NOT NULL,
+            stored_name TEXT NOT NULL,
+            size INTEGER DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE TABLE IF NOT EXISTS questions (
@@ -194,6 +205,71 @@ def answer_question(q_id):
     db.commit()
     q = db.execute("SELECT * FROM questions WHERE id = ?", (q_id,)).fetchone()
     return jsonify(dict(q))
+
+
+# --- Files API ---
+
+@app.route("/api/tasks/<int:task_id>/files", methods=["GET"])
+def list_files(task_id):
+    db = get_db()
+    rows = db.execute(
+        "SELECT * FROM files WHERE task_id = ? ORDER BY created_at ASC", (task_id,)
+    ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/tasks/<int:task_id>/files", methods=["POST"])
+def upload_file(task_id):
+    if "file" not in request.files:
+        return jsonify({"error": "no file"}), 400
+    f = request.files["file"]
+    if not f.filename:
+        return jsonify({"error": "empty filename"}), 400
+    f.seek(0, 2)
+    size = f.tell()
+    f.seek(0)
+    if size > MAX_FILE_SIZE:
+        return jsonify({"error": "file too large (max 50MB)"}), 400
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    original = secure_filename(f.filename)
+    stored = f"{task_id}_{int(datetime.utcnow().timestamp() * 1000)}_{original}"
+    f.save(os.path.join(UPLOAD_DIR, stored))
+    db = get_db()
+    cur = db.execute(
+        "INSERT INTO files (task_id, filename, stored_name, size) VALUES (?, ?, ?, ?)",
+        (task_id, original, stored, size),
+    )
+    db.execute("UPDATE tasks SET updated_at=datetime('now') WHERE id=?", (task_id,))
+    db.commit()
+    row = db.execute("SELECT * FROM files WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return jsonify(dict(row)), 201
+
+
+@app.route("/api/files/<int:file_id>/download")
+def download_file(file_id):
+    db = get_db()
+    row = db.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    return send_from_directory(
+        os.path.abspath(UPLOAD_DIR), row["stored_name"],
+        download_name=row["filename"], as_attachment=True,
+    )
+
+
+@app.route("/api/files/<int:file_id>", methods=["DELETE"])
+def delete_file(file_id):
+    db = get_db()
+    row = db.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    path = os.path.join(UPLOAD_DIR, row["stored_name"])
+    if os.path.exists(path):
+        os.remove(path)
+    db.execute("DELETE FROM files WHERE id = ?", (file_id,))
+    db.execute("UPDATE tasks SET updated_at=datetime('now') WHERE id=?", (row["task_id"],))
+    db.commit()
+    return "", 204
 
 
 if __name__ == "__main__":
